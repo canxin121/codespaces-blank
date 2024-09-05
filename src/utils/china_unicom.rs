@@ -26,12 +26,28 @@ pub async fn query_once(
     config: &ConfigModel,
 ) -> anyhow::Result<(bool, String)> {
     let new_data = query_china_unicom_data(&config.cookie).await?;
-    let yesterday = YesterdayEntity::find_by_id(config.user.as_str())
+    let yesterday = match YesterdayEntity::find_by_id(config.user.as_str())
         .one(db)
-        .await?;
-    let today = TodayEntity::find_by_id(config.user.as_str())
-        .one(db)
-        .await?;
+        .await
+    {
+        Ok(y) => y,
+        Err(e) => match e {
+            sea_orm::DbErr::RecordNotFound(_) => None,
+            other => {
+                return Err(anyhow::anyhow!(
+                    "Error when query yesterday data: {}",
+                    other
+                ))
+            }
+        },
+    };
+    let today = match TodayEntity::find_by_id(config.user.as_str()).one(db).await {
+        Ok(t) => t,
+        Err(e) => match e {
+            sea_orm::DbErr::RecordNotFound(_) => None,
+            other => return Err(anyhow::anyhow!("Error when query today data: {}", other)),
+        },
+    };
     let mut should_send = false;
     let mut message = format!("{}:\n", new_data.package_name);
 
@@ -46,7 +62,7 @@ pub async fn query_once(
                 message += "\n";
             }
             None => {
-                // this should not happen
+                // this should not happen, enless the db is corrupted
                 YesterdayEntity::delete_by_id(config.user.as_str())
                     .exec(db)
                     .await?;
@@ -89,7 +105,7 @@ async fn handle_update(
 ) -> anyhow::Result<bool> {
     let new_data_date = new_data.time.date_naive();
     let today_data_date = today_model.time.date_naive();
-    
+
     if new_data_date != today_data_date {
         if today_data_date.succ_opt() == Some(new_data_date) {
             let update_data: YesterdayModel = today_model.clone().into();
